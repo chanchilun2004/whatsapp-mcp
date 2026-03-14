@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -854,10 +855,10 @@ pre{background:#fff;padding:1rem;font-size:4px;line-height:4px;letter-spacing:1p
 		if status == "connected" {
 			fmt.Fprint(w, `<p>Connected! You can close this page.</p>`)
 		} else if qr != "" {
-			// Generate a simple text-based QR for the web page
+			encodedQR := url.QueryEscape(qr)
 			fmt.Fprintf(w, `<p>Scan this QR code with WhatsApp:</p>
-<img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=%s" alt="QR Code"/>
-<p><small>Page auto-refreshes every 5 seconds</small></p>`, qr)
+<img src="https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=%s" alt="QR Code"/>
+<p><small>Page auto-refreshes every 5 seconds</small></p>`, encodedQR)
 		} else {
 			fmt.Fprint(w, `<p>Waiting for QR code... Page auto-refreshes every 5 seconds.</p>`)
 		}
