@@ -1,5 +1,8 @@
 import os
+import sys
 from typing import List, Dict, Any, Optional
+
+sys.setrecursionlimit(10000)
 from mcp.server.fastmcp import FastMCP
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
