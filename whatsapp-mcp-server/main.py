@@ -1,6 +1,7 @@
 import os
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
+import requests
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
     list_messages as whatsapp_list_messages,
@@ -13,7 +14,8 @@ from whatsapp import (
     send_message as whatsapp_send_message,
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
-    download_media as whatsapp_download_media
+    download_media as whatsapp_download_media,
+    WHATSAPP_API_BASE_URL,
 )
 
 # Initialize FastMCP server
@@ -188,15 +190,16 @@ def send_message(
 def send_file(recipient: str, file_content: str = "", file_name: str = "", media_path: str = "") -> Dict[str, Any]:
     """Send a file (picture, video, document) via WhatsApp. For group messages use the JID.
 
-    IMPORTANT: You MUST use file_content + file_name to send files. Read the file, base64-encode it,
-    and pass it as file_content. Do NOT use media_path — it only works for local deployment.
+    To send files: first ask the user to upload the file at the bridge upload page,
+    then use list_uploaded_files to get the server path, then call this with media_path.
+    Alternatively, for small files, pass base64-encoded content via file_content + file_name.
 
     Args:
         recipient: The recipient - phone number with country code (no + or symbols),
                  or a JID (e.g., "123456789@s.whatsapp.net" or group JID "123456789@g.us")
-        file_content: Base64-encoded file content. Read the file and encode it as base64 string.
+        file_content: Base64-encoded file content (for small files)
         file_name: Original filename with extension, e.g. "photo.jpg" (required with file_content)
-        media_path: Local file path (only works when bridge runs locally, not on remote deployment)
+        media_path: Server-side file path from list_uploaded_files, or local path for local deployment
     """
     success, status_message = whatsapp_send_file(recipient, media_path, file_content, file_name)
     return {
@@ -207,17 +210,18 @@ def send_file(recipient: str, file_content: str = "", file_name: str = "", media
 @mcp.tool()
 def send_audio_message(recipient: str, file_content: str = "", file_name: str = "", media_path: str = "") -> Dict[str, Any]:
     """Send an audio file as a WhatsApp voice message. For group messages use the JID.
-
-    IMPORTANT: You MUST use file_content + file_name to send audio. Read the file, base64-encode it,
-    and pass it as file_content. Do NOT use media_path — it only works for local deployment.
     Non-ogg files will be automatically converted to Opus format.
+
+    To send audio: first ask the user to upload the file at the bridge upload page,
+    then use list_uploaded_files to get the server path, then call this with media_path.
+    Alternatively, for small files, pass base64-encoded content via file_content + file_name.
 
     Args:
         recipient: The recipient - phone number with country code (no + or symbols),
                  or a JID (e.g., "123456789@s.whatsapp.net" or group JID "123456789@g.us")
-        file_content: Base64-encoded audio file content. Read the file and encode it as base64 string.
+        file_content: Base64-encoded audio file content (for small files)
         file_name: Original filename with extension, e.g. "voice.mp3" (required with file_content)
-        media_path: Local file path (only works when bridge runs locally, not on remote deployment)
+        media_path: Server-side file path from list_uploaded_files, or local path for local deployment
     """
     success, status_message = whatsapp_audio_voice_message(recipient, media_path, file_content, file_name)
     return {
@@ -249,6 +253,28 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
             "success": False,
             "message": "Failed to download media"
         }
+
+@mcp.tool()
+def list_uploaded_files() -> Dict[str, Any]:
+    """List files that have been uploaded to the WhatsApp bridge server via the web upload page.
+    These files can be sent using send_file or send_audio_message with the media_path parameter.
+
+    To upload files, the user should visit the bridge upload page in their browser.
+    """
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/uploads"
+        response = requests.get(url)
+        if response.status_code == 200:
+            files = response.json()
+            return {
+                "success": True,
+                "files": files or [],
+                "message": f"Found {len(files or [])} uploaded file(s)"
+            }
+        else:
+            return {"success": False, "message": f"Error: {response.status_code}"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
 
 if __name__ == "__main__":
     # Use SSE transport for remote access, stdio for local/Claude Desktop

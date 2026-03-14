@@ -864,6 +864,110 @@ pre{background:#fff;padding:1rem;font-size:4px;line-height:4px;letter-spacing:1p
 		fmt.Fprint(w, `</body></html>`)
 	})
 
+	// Handler for file upload page and API
+	http.HandleFunc("/api/upload", func(w http.ResponseWriter, r *http.Request) {
+		uploadDir := filepath.Join(getDataDir(), "uploads")
+		os.MkdirAll(uploadDir, 0755)
+
+		if r.Method == http.MethodGet {
+			// Show upload form
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+			// List existing uploaded files
+			files, _ := os.ReadDir(uploadDir)
+			var fileListHTML string
+			for _, f := range files {
+				if !f.IsDir() {
+					serverPath := filepath.Join(uploadDir, f.Name())
+					fileListHTML += fmt.Sprintf(`<li><code>%s</code> — %s</li>`, serverPath, f.Name())
+				}
+			}
+			if fileListHTML == "" {
+				fileListHTML = "<li>No files uploaded yet</li>"
+			}
+
+			fmt.Fprintf(w, `<!DOCTYPE html>
+<html><head><title>Upload File</title>
+<style>body{font-family:sans-serif;max-width:600px;margin:2rem auto;padding:0 1rem}
+code{background:#f0f0f0;padding:2px 6px;border-radius:3px;font-size:0.9em}
+.success{color:#155724;background:#d4edda;padding:0.5rem 1rem;border-radius:4px;margin:1rem 0}
+ul{list-style:none;padding:0}li{padding:0.3rem 0}</style></head><body>
+<h1>Upload File to WhatsApp Bridge</h1>
+<form method="POST" enctype="multipart/form-data">
+<input type="file" name="file" required style="margin:1rem 0;display:block">
+<button type="submit" style="padding:0.5rem 1rem;cursor:pointer">Upload</button>
+</form>
+<h2>Uploaded Files</h2>
+<p>Tell Claude to use these paths with <code>media_path</code>:</p>
+<ul>%s</ul>
+</body></html>`, fileListHTML)
+			return
+		}
+
+		if r.Method == http.MethodPost {
+			// Handle file upload (max 50MB)
+			r.ParseMultipartForm(50 << 20)
+			file, header, err := r.FormFile("file")
+			if err != nil {
+				http.Error(w, "Failed to read file", http.StatusBadRequest)
+				return
+			}
+			defer file.Close()
+
+			dst, err := os.Create(filepath.Join(uploadDir, header.Filename))
+			if err != nil {
+				http.Error(w, "Failed to save file", http.StatusInternalServerError)
+				return
+			}
+			defer dst.Close()
+
+			buf := make([]byte, 1024*1024)
+			for {
+				n, readErr := file.Read(buf)
+				if n > 0 {
+					dst.Write(buf[:n])
+				}
+				if readErr != nil {
+					break
+				}
+			}
+
+			serverPath := filepath.Join(uploadDir, header.Filename)
+			absPath, _ := filepath.Abs(serverPath)
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{
+				"success":  "true",
+				"path":     absPath,
+				"filename": header.Filename,
+			})
+			return
+		}
+
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	})
+
+	// Handler for listing uploaded files (for MCP tools)
+	http.HandleFunc("/api/uploads", func(w http.ResponseWriter, r *http.Request) {
+		uploadDir := filepath.Join(getDataDir(), "uploads")
+		files, _ := os.ReadDir(uploadDir)
+
+		type FileInfo struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		}
+		var result []FileInfo
+		for _, f := range files {
+			if !f.IsDir() {
+				absPath, _ := filepath.Abs(filepath.Join(uploadDir, f.Name()))
+				result = append(result, FileInfo{Name: f.Name(), Path: absPath})
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	})
+
 	// Handler for status API
 	http.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
