@@ -185,38 +185,46 @@ def send_message(
     }
 
 @mcp.tool()
-def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
+def send_file(recipient: str, media_path: str = "", file_content: str = "", file_name: str = "") -> Dict[str, Any]:
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
-    
+
+    For remote deployment, read the file and pass its content as base64 via file_content + file_name.
+    For local deployment, pass media_path instead.
+
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
-        media_path: The absolute path to the media file to send (image, video, document)
-    
+        media_path: The absolute path to the media file (for local deployment only)
+        file_content: Base64-encoded file content (for remote deployment)
+        file_name: Original filename with extension, e.g. "photo.jpg" (required when using file_content)
+
     Returns:
         A dictionary containing success status and a status message
     """
-    
-    # Call the whatsapp_send_file function
-    success, status_message = whatsapp_send_file(recipient, media_path)
+    success, status_message = whatsapp_send_file(recipient, media_path, file_content, file_name)
     return {
         "success": success,
         "message": status_message
     }
 
 @mcp.tool()
-def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
-    """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.
-    
+def send_audio_message(recipient: str, media_path: str = "", file_content: str = "", file_name: str = "") -> Dict[str, Any]:
+    """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID.
+
+    For remote deployment, read the file and pass its content as base64 via file_content + file_name.
+    For local deployment, pass media_path instead.
+
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
-        media_path: The absolute path to the audio file to send (will be converted to Opus .ogg if it's not a .ogg file)
-    
+        media_path: The absolute path to the audio file (for local deployment only)
+        file_content: Base64-encoded file content (for remote deployment)
+        file_name: Original filename with extension, e.g. "voice.mp3" (required when using file_content)
+
     Returns:
         A dictionary containing success status and a status message
     """
-    success, status_message = whatsapp_audio_voice_message(recipient, media_path)
+    success, status_message = whatsapp_audio_voice_message(recipient, media_path, file_content, file_name)
     return {
         "success": success,
         "message": status_message
