@@ -2,13 +2,27 @@ import sqlite3
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
+import os
 import os.path
 import requests
 import json
 import audio
 
-MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
-WHATSAPP_API_BASE_URL = "http://localhost:8080/api"
+MESSAGES_DB_PATH = os.environ.get(
+    'MESSAGES_DB_PATH',
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
+)
+WHATSAPP_API_BASE_URL = os.environ.get(
+    'WHATSAPP_API_URL',
+    "http://localhost:8080/api"
+)
+
+
+def _connect_db() -> sqlite3.Connection:
+    """Open a SQLite connection with WAL mode enabled."""
+    conn = _connect_db()
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
 
 @dataclass
 class Message:
@@ -49,7 +63,7 @@ class MessageContext:
 
 def get_sender_name(sender_jid: str) -> str:
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = _connect_db()
         cursor = conn.cursor()
         
         # First try matching by exact JID
@@ -135,7 +149,7 @@ def list_messages(
 ) -> List[Message]:
     """Get messages matching the specified criteria with optional context."""
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = _connect_db()
         cursor = conn.cursor()
         
         # Build base query
@@ -230,7 +244,7 @@ def get_message_context(
 ) -> MessageContext:
     """Get context around a specific message."""
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = _connect_db()
         cursor = conn.cursor()
         
         # Get the target message first
@@ -325,7 +339,7 @@ def list_chats(
 ) -> List[Chat]:
     """Get chats matching the specified criteria."""
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = _connect_db()
         cursor = conn.cursor()
         
         # Build base query
@@ -393,7 +407,7 @@ def list_chats(
 def search_contacts(query: str) -> List[Contact]:
     """Search contacts by name or phone number."""
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = _connect_db()
         cursor = conn.cursor()
         
         # Split query into characters to support partial matching
@@ -441,7 +455,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
         page: Page number for pagination (default 0)
     """
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = _connect_db()
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -486,7 +500,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
 def get_last_interaction(jid: str) -> str:
     """Get most recent message involving the contact."""
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = _connect_db()
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -535,7 +549,7 @@ def get_last_interaction(jid: str) -> str:
 def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]:
     """Get chat metadata by JID."""
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = _connect_db()
         cursor = conn.cursor()
         
         query = """
@@ -583,7 +597,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
 def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
     """Get chat metadata by sender phone number."""
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = _connect_db()
         cursor = conn.cursor()
         
         cursor.execute("""

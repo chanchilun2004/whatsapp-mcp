@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/binary"
@@ -13,14 +14,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/mdp/qrterminal"
-
-	"bytes"
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
@@ -30,6 +31,47 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 )
+
+// Global QR code state for web-based QR display
+var (
+	currentQRCode string
+	qrMutex       sync.RWMutex
+	clientStatus   string = "disconnected"
+	statusMutex    sync.RWMutex
+)
+
+func setQRCode(code string) {
+	qrMutex.Lock()
+	defer qrMutex.Unlock()
+	currentQRCode = code
+}
+
+func getQRCode() string {
+	qrMutex.RLock()
+	defer qrMutex.RUnlock()
+	return currentQRCode
+}
+
+func setStatus(status string) {
+	statusMutex.Lock()
+	defer statusMutex.Unlock()
+	clientStatus = status
+}
+
+func getStatus() string {
+	statusMutex.RLock()
+	defer statusMutex.RUnlock()
+	return clientStatus
+}
+
+func getBridgePort() int {
+	if portStr := os.Getenv("BRIDGE_PORT"); portStr != "" {
+		if port, err := strconv.Atoi(portStr); err == nil {
+			return port
+		}
+	}
+	return 8080
+}
 
 // Message represents a chat message for our client
 type Message struct {
@@ -46,17 +88,34 @@ type MessageStore struct {
 	db *sql.DB
 }
 
+// getDataDir returns the data directory from DATA_DIR env var or "store" as default
+func getDataDir() string {
+	if dir := os.Getenv("DATA_DIR"); dir != "" {
+		return dir
+	}
+	return "store"
+}
+
 // Initialize message store
 func NewMessageStore() (*MessageStore, error) {
+	dataDir := getDataDir()
+
 	// Create directory for database if it doesn't exist
-	if err := os.MkdirAll("store", 0755); err != nil {
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create store directory: %v", err)
 	}
 
 	// Open SQLite database for messages
-	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on")
+	dbPath := filepath.Join(dataDir, "messages.db")
+	db, err := sql.Open("sqlite3", "file:"+dbPath+"?_foreign_keys=on")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
+	}
+
+	// Enable WAL mode for concurrent read/write access
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to set WAL mode: %v", err)
 	}
 
 	// Create tables if they don't exist
@@ -66,7 +125,7 @@ func NewMessageStore() (*MessageStore, error) {
 			name TEXT,
 			last_message_time TIMESTAMP
 		);
-		
+
 		CREATE TABLE IF NOT EXISTS messages (
 			id TEXT,
 			chat_jid TEXT,
@@ -562,7 +621,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	var err error
 
 	// First, check if we already have this file
-	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(chatJID, ":", "_"))
+	chatDir := filepath.Join(getDataDir(), strings.ReplaceAll(chatJID, ":", "_"))
 	localPath := ""
 
 	// Get media info from the database
@@ -641,7 +700,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Download the media using whatsmeow client
-	mediaData, err := client.Download(downloader)
+	mediaData, err := client.Download(context.Background(), downloader)
 	if err != nil {
 		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
 	}
@@ -774,6 +833,45 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		})
 	})
 
+	// Handler for QR code web page
+	http.HandleFunc("/api/qr", func(w http.ResponseWriter, r *http.Request) {
+		qr := getQRCode()
+		status := getStatus()
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!DOCTYPE html>
+<html><head><title>WhatsApp QR</title>
+<meta http-equiv="refresh" content="5">
+<style>body{font-family:sans-serif;display:flex;flex-direction:column;align-items:center;padding:2rem}
+pre{background:#fff;padding:1rem;font-size:4px;line-height:4px;letter-spacing:1px}
+.status{padding:0.5rem 1rem;border-radius:4px;margin:1rem;font-weight:bold}
+.connected{background:#d4edda;color:#155724}
+.waiting{background:#fff3cd;color:#856404}
+.disconnected{background:#f8d7da;color:#721c24}</style></head><body>
+<h1>WhatsApp Bridge</h1>
+<div class="status %s">Status: %s</div>`, status, status)
+
+		if status == "connected" {
+			fmt.Fprint(w, `<p>Connected! You can close this page.</p>`)
+		} else if qr != "" {
+			// Generate a simple text-based QR for the web page
+			fmt.Fprintf(w, `<p>Scan this QR code with WhatsApp:</p>
+<img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=%s" alt="QR Code"/>
+<p><small>Page auto-refreshes every 5 seconds</small></p>`, qr)
+		} else {
+			fmt.Fprint(w, `<p>Waiting for QR code... Page auto-refreshes every 5 seconds.</p>`)
+		}
+		fmt.Fprint(w, `</body></html>`)
+	})
+
+	// Handler for status API
+	http.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": getStatus(),
+		})
+	})
+
 	// Start the server
 	serverAddr := fmt.Sprintf(":%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
@@ -791,23 +889,27 @@ func main() {
 	logger := waLog.Stdout("Client", "INFO", true)
 	logger.Infof("Starting WhatsApp client...")
 
+	dataDir := getDataDir()
+	bridgePort := getBridgePort()
+
 	// Create database connection for storing session data
 	dbLog := waLog.Stdout("Database", "INFO", true)
 
 	// Create directory for database if it doesn't exist
-	if err := os.MkdirAll("store", 0755); err != nil {
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		logger.Errorf("Failed to create store directory: %v", err)
 		return
 	}
 
-	container, err := sqlstore.New("sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	waDBPath := filepath.Join(dataDir, "whatsapp.db")
+	container, err := sqlstore.New(context.Background(), "sqlite3", "file:"+waDBPath+"?_foreign_keys=on", dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		return
 	}
 
 	// Get device store - This contains session information
-	deviceStore, err := container.GetFirstDevice()
+	deviceStore, err := container.GetFirstDevice(context.Background())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// No device exists, create one
@@ -834,6 +936,9 @@ func main() {
 	}
 	defer messageStore.Close()
 
+	// Start REST API server BEFORE QR flow so /api/qr is accessible during pairing
+	startRESTServer(client, messageStore, bridgePort)
+
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
@@ -847,9 +952,12 @@ func main() {
 
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
+			setStatus("connected")
+			setQRCode("") // Clear QR code once connected
 
 		case *events.LoggedOut:
 			logger.Warnf("Device logged out, please scan QR code to log in again")
+			setStatus("disconnected")
 		}
 	})
 
@@ -859,6 +967,7 @@ func main() {
 	// Connect to WhatsApp
 	if client.Store.ID == nil {
 		// No ID stored, this is a new client, need to pair with phone
+		setStatus("waiting_for_qr")
 		qrChan, _ := client.GetQRChannel(context.Background())
 		err = client.Connect()
 		if err != nil {
@@ -871,7 +980,11 @@ func main() {
 			if evt.Event == "code" {
 				fmt.Println("\nScan this QR code with your WhatsApp app:")
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+				// Store QR code for web access
+				setQRCode(evt.Code)
 			} else if evt.Event == "success" {
+				setStatus("connected")
+				setQRCode("")
 				connected <- true
 				break
 			}
@@ -892,6 +1005,7 @@ func main() {
 			logger.Errorf("Failed to connect: %v", err)
 			return
 		}
+		setStatus("connected")
 		connected <- true
 	}
 
@@ -903,21 +1017,19 @@ func main() {
 		return
 	}
 
-	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
-
-	// Start REST API server
-	startRESTServer(client, messageStore, 8080)
+	fmt.Println("\n✓ Connected to WhatsApp!")
 
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)
 	signal.Notify(exitChan, syscall.SIGINT, syscall.SIGTERM)
 
-	fmt.Println("REST server is running. Press Ctrl+C to disconnect and exit.")
+	fmt.Printf("REST server is running on port %d. Press Ctrl+C to disconnect and exit.\n", bridgePort)
 
 	// Wait for termination signal
 	<-exitChan
 
 	fmt.Println("Disconnecting...")
+	setStatus("disconnected")
 	// Disconnect client
 	client.Disconnect()
 }
@@ -973,7 +1085,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 
 		// If we didn't get a name, try group info
 		if name == "" {
-			groupInfo, err := client.GetGroupInfo(jid)
+			groupInfo, err := client.GetGroupInfo(context.Background(), jid)
 			if err == nil && groupInfo.Name != "" {
 				name = groupInfo.Name
 			} else {
@@ -988,7 +1100,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 		logger.Infof("Getting name for contact: %s", chatJID)
 
 		// Just use contact info (full name)
-		contact, err := client.Store.Contacts.GetContact(jid)
+		contact, err := client.Store.Contacts.GetContact(context.Background(), jid)
 		if err == nil && contact.FullName != "" {
 			name = contact.FullName
 		} else if sender != "" {
