@@ -20,7 +20,7 @@ WHATSAPP_API_BASE_URL = os.environ.get(
 
 def _connect_db() -> sqlite3.Connection:
     """Open a SQLite connection with WAL mode enabled."""
-    conn = _connect_db()
+    conn = sqlite3.connect(MESSAGES_DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
