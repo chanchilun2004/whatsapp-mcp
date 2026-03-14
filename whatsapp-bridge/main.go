@@ -33,11 +33,17 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+const (
+	StatusConnected    = "connected"
+	StatusDisconnected = "disconnected"
+	StatusWaitingQR    = "waiting_for_qr"
+)
+
 // Global QR code state for web-based QR display
 var (
 	currentQRCode string
 	qrMutex       sync.RWMutex
-	clientStatus   string = "disconnected"
+	clientStatus   string = StatusDisconnected
 	statusMutex    sync.RWMutex
 )
 
@@ -99,15 +105,8 @@ func getDataDir() string {
 
 // Initialize message store
 func NewMessageStore() (*MessageStore, error) {
-	dataDir := getDataDir()
-
-	// Create directory for database if it doesn't exist
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create store directory: %v", err)
-	}
-
 	// Open SQLite database for messages
-	dbPath := filepath.Join(dataDir, "messages.db")
+	dbPath := filepath.Join(getDataDir(), "messages.db")
 	db, err := sql.Open("sqlite3", "file:"+dbPath+"?_foreign_keys=on")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
@@ -852,7 +851,7 @@ pre{background:#fff;padding:1rem;font-size:4px;line-height:4px;letter-spacing:1p
 <h1>WhatsApp Bridge</h1>
 <div class="status %s">Status: %s</div>`, status, status)
 
-		if status == "connected" {
+		if status == StatusConnected {
 			fmt.Fprint(w, `<p>Connected! You can close this page.</p>`)
 		} else if qr != "" {
 			encodedQR := url.QueryEscape(qr)
@@ -953,12 +952,12 @@ func main() {
 
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
-			setStatus("connected")
+			setStatus(StatusConnected)
 			setQRCode("") // Clear QR code once connected
 
 		case *events.LoggedOut:
 			logger.Warnf("Device logged out, please scan QR code to log in again")
-			setStatus("disconnected")
+			setStatus(StatusDisconnected)
 		}
 	})
 
@@ -968,7 +967,7 @@ func main() {
 	// Connect to WhatsApp
 	if client.Store.ID == nil {
 		// No ID stored, this is a new client, need to pair with phone
-		setStatus("waiting_for_qr")
+		setStatus(StatusWaitingQR)
 		qrChan, _ := client.GetQRChannel(context.Background())
 		err = client.Connect()
 		if err != nil {
@@ -984,7 +983,7 @@ func main() {
 				// Store QR code for web access
 				setQRCode(evt.Code)
 			} else if evt.Event == "success" {
-				setStatus("connected")
+				setStatus(StatusConnected)
 				setQRCode("")
 				connected <- true
 				break
@@ -1006,7 +1005,7 @@ func main() {
 			logger.Errorf("Failed to connect: %v", err)
 			return
 		}
-		setStatus("connected")
+		setStatus(StatusConnected)
 		connected <- true
 	}
 
@@ -1030,7 +1029,7 @@ func main() {
 	<-exitChan
 
 	fmt.Println("Disconnecting...")
-	setStatus("disconnected")
+	setStatus(StatusDisconnected)
 	// Disconnect client
 	client.Disconnect()
 }
