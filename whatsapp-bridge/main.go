@@ -45,7 +45,52 @@ var (
 	qrMutex       sync.RWMutex
 	clientStatus   string = StatusDisconnected
 	statusMutex    sync.RWMutex
+	webhookURL     string
 )
+
+// WebhookPayload is the JSON body sent to the configured webhook URL on new messages
+type WebhookPayload struct {
+	ID        string `json:"id"`
+	ChatJID   string `json:"chat_jid"`
+	Sender    string `json:"sender"`
+	Content   string `json:"content"`
+	Timestamp string `json:"timestamp"`
+	IsFromMe  bool   `json:"is_from_me"`
+	MediaType string `json:"media_type"`
+	Filename  string `json:"filename"`
+	ChatName  string `json:"chat_name"`
+}
+
+func getWebhookURL() string {
+	if url := os.Getenv("WEBHOOK_URL"); url != "" {
+		return url
+	}
+	return ""
+}
+
+// fireWebhook sends message data to the configured webhook URL asynchronously
+func fireWebhook(payload WebhookPayload, logger waLog.Logger) {
+	if webhookURL == "" {
+		return
+	}
+	go func() {
+		jsonData, err := json.Marshal(payload)
+		if err != nil {
+			logger.Warnf("Webhook: failed to marshal payload: %v", err)
+			return
+		}
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Post(webhookURL, "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			logger.Warnf("Webhook: failed to POST to %s: %v", webhookURL, err)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			logger.Warnf("Webhook: %s returned status %d", webhookURL, resp.StatusCode)
+		}
+	}()
+}
 
 func setQRCode(code string) {
 	qrMutex.Lock()
@@ -526,6 +571,19 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		} else if content != "" {
 			fmt.Printf("[%s] %s %s: %s\n", timestamp, direction, sender, content)
 		}
+
+		// Fire webhook notification
+		fireWebhook(WebhookPayload{
+			ID:        msg.Info.ID,
+			ChatJID:   chatJID,
+			Sender:    sender,
+			Content:   content,
+			Timestamp: msg.Info.Timestamp.Format(time.RFC3339),
+			IsFromMe:  msg.Info.IsFromMe,
+			MediaType: mediaType,
+			Filename:  filename,
+			ChatName:  name,
+		}, logger)
 	}
 }
 
@@ -995,6 +1053,10 @@ func main() {
 
 	dataDir := getDataDir()
 	bridgePort := getBridgePort()
+	webhookURL = getWebhookURL()
+	if webhookURL != "" {
+		logger.Infof("Webhook configured: %s", webhookURL)
+	}
 
 	// Create database connection for storing session data
 	dbLog := waLog.Stdout("Database", "INFO", true)
