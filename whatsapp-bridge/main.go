@@ -74,13 +74,14 @@ func fireWebhook(payload WebhookPayload, logger waLog.Logger) {
 		return
 	}
 	go func() {
+		logger.Infof("Webhook: firing for %s in %s", payload.ID, payload.ChatJID)
 		jsonData, err := json.Marshal(payload)
 		if err != nil {
 			logger.Warnf("Webhook: failed to marshal payload: %v", err)
 			return
 		}
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Post(webhookURL, "application/json", bytes.NewBuffer(jsonData))
+		httpClient := &http.Client{Timeout: 5 * time.Second}
+		resp, err := httpClient.Post(webhookURL, "application/json", bytes.NewBuffer(jsonData))
 		if err != nil {
 			logger.Warnf("Webhook: failed to POST to %s: %v", webhookURL, err)
 			return
@@ -88,6 +89,8 @@ func fireWebhook(payload WebhookPayload, logger waLog.Logger) {
 		defer resp.Body.Close()
 		if resp.StatusCode >= 400 {
 			logger.Warnf("Webhook: %s returned status %d", webhookURL, resp.StatusCode)
+		} else {
+			logger.Infof("Webhook: sent OK for %s (status %d)", payload.ID, resp.StatusCode)
 		}
 	}()
 }
@@ -289,7 +292,17 @@ func extractTextContent(msg *waProto.Message) string {
 		return extendedText.GetText()
 	}
 
-	// For now, we're ignoring non-text messages
+	// Extract captions from media messages
+	if img := msg.GetImageMessage(); img != nil && img.GetCaption() != "" {
+		return img.GetCaption()
+	}
+	if vid := msg.GetVideoMessage(); vid != nil && vid.GetCaption() != "" {
+		return vid.GetCaption()
+	}
+	if doc := msg.GetDocumentMessage(); doc != nil && doc.GetCaption() != "" {
+		return doc.GetCaption()
+	}
+
 	return ""
 }
 
@@ -825,6 +838,25 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		// Send the message
 		success, message := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
 		fmt.Println("Message sent", success, message)
+
+		// Store sent message in local DB so it appears in chat history
+		if success && req.Message != "" {
+			chatJID := req.Recipient
+			if !strings.Contains(chatJID, "@") {
+				chatJID = chatJID + "@s.whatsapp.net"
+			}
+			msgID := fmt.Sprintf("sent_%d", time.Now().UnixMilli())
+			ownJID := ""
+			if client.Store.ID != nil {
+				ownJID = client.Store.ID.User
+			}
+			_ = messageStore.StoreMessage(
+				msgID, chatJID, ownJID, req.Message,
+				time.Now(), true, "", "", "", nil, nil, nil, 0,
+			)
+			_ = messageStore.StoreChat(chatJID, "", time.Now())
+		}
+
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
 

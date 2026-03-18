@@ -1,4 +1,5 @@
 import os
+import dataclasses
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
 import requests
@@ -16,10 +17,22 @@ from whatsapp import (
     send_audio_message as whatsapp_audio_voice_message,
     download_media as whatsapp_download_media,
     WHATSAPP_API_BASE_URL,
+    _connect_db,
+    Message,
 )
 
 # Initialize FastMCP server
 mcp = FastMCP("whatsapp")
+
+def to_dict(obj):
+    """Convert dataclass instances (or lists of them) to plain dicts."""
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return {k: to_dict(v) for k, v in dataclasses.asdict(obj).items()}
+    elif isinstance(obj, list):
+        return [to_dict(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: to_dict(v) for k, v in obj.items()}
+    return obj
 
 @mcp.tool()
 def search_contacts(query: str) -> List[Dict[str, Any]]:
@@ -29,7 +42,7 @@ def search_contacts(query: str) -> List[Dict[str, Any]]:
         query: Search term to match against contact names or phone numbers
     """
     contacts = whatsapp_search_contacts(query)
-    return contacts
+    return to_dict(contacts)
 
 @mcp.tool()
 def list_messages(
@@ -40,12 +53,12 @@ def list_messages(
     query: Optional[str] = None,
     limit: int = 20,
     page: int = 0,
-    include_context: bool = True,
+    include_context: bool = False,
     context_before: int = 1,
     context_after: int = 1
 ) -> List[Dict[str, Any]]:
     """Get WhatsApp messages matching specified criteria with optional context.
-    
+
     Args:
         after: Optional ISO-8601 formatted string to only return messages after this date
         before: Optional ISO-8601 formatted string to only return messages before this date
@@ -54,23 +67,66 @@ def list_messages(
         query: Optional search term to filter messages by content
         limit: Maximum number of messages to return (default 20)
         page: Page number for pagination (default 0)
-        include_context: Whether to include messages before and after matches (default True)
+        include_context: Whether to include messages before and after matches (default False)
         context_before: Number of messages to include before each match (default 1)
         context_after: Number of messages to include after each match (default 1)
     """
-    messages = whatsapp_list_messages(
-        after=after,
-        before=before,
-        sender_phone_number=sender_phone_number,
-        chat_jid=chat_jid,
-        query=query,
-        limit=limit,
-        page=page,
-        include_context=include_context,
-        context_before=context_before,
-        context_after=context_after
-    )
-    return messages
+    import sqlite3
+    from datetime import datetime
+    try:
+        conn = _connect_db()
+        cursor = conn.cursor()
+
+        query_parts = ["SELECT messages.id, messages.chat_jid, messages.sender, messages.content, messages.timestamp, messages.is_from_me, messages.media_type, chats.name as chat_name FROM messages"]
+        query_parts.append("JOIN chats ON messages.chat_jid = chats.jid")
+        where_clauses = []
+        params = []
+
+        if after:
+            where_clauses.append("messages.timestamp > ?")
+            params.append(after)
+        if before:
+            where_clauses.append("messages.timestamp < ?")
+            params.append(before)
+        if sender_phone_number:
+            where_clauses.append("messages.sender = ?")
+            params.append(sender_phone_number)
+        if chat_jid:
+            where_clauses.append("messages.chat_jid = ?")
+            params.append(chat_jid)
+        if query:
+            where_clauses.append("LOWER(messages.content) LIKE LOWER(?)")
+            params.append(f"%{query}%")
+
+        if where_clauses:
+            query_parts.append("WHERE " + " AND ".join(where_clauses))
+
+        offset_val = page * limit
+        query_parts.append("ORDER BY messages.timestamp DESC")
+        query_parts.append("LIMIT ? OFFSET ?")
+        params.extend([limit, offset_val])
+
+        cursor.execute(" ".join(query_parts), tuple(params))
+        rows = cursor.fetchall()
+
+        result = []
+        for row in rows:
+            result.append({
+                "id": row[0],
+                "chat_jid": row[1],
+                "sender": row[2],
+                "content": row[3],
+                "timestamp": row[4],
+                "is_from_me": bool(row[5]),
+                "media_type": row[6],
+                "chat_name": row[7],
+            })
+        return result
+    except sqlite3.Error as e:
+        return []
+    finally:
+        if 'conn' in locals():
+            conn.close()
 
 @mcp.tool()
 def list_chats(
@@ -96,7 +152,7 @@ def list_chats(
         include_last_message=include_last_message,
         sort_by=sort_by
     )
-    return chats
+    return to_dict(chats)
 
 @mcp.tool()
 def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]:
@@ -107,7 +163,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]
         include_last_message: Whether to include the last message (default True)
     """
     chat = whatsapp_get_chat(chat_jid, include_last_message)
-    return chat
+    return to_dict(chat)
 
 @mcp.tool()
 def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
@@ -117,7 +173,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
         sender_phone_number: The phone number to search for
     """
     chat = whatsapp_get_direct_chat_by_contact(sender_phone_number)
-    return chat
+    return to_dict(chat)
 
 @mcp.tool()
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str, Any]]:
@@ -129,7 +185,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str
         page: Page number for pagination (default 0)
     """
     chats = whatsapp_get_contact_chats(jid, limit, page)
-    return chats
+    return to_dict(chats)
 
 @mcp.tool()
 def get_last_interaction(jid: str) -> str:
@@ -139,7 +195,7 @@ def get_last_interaction(jid: str) -> str:
         jid: The JID of the contact to search for
     """
     message = whatsapp_get_last_interaction(jid)
-    return message
+    return to_dict(message)
 
 @mcp.tool()
 def get_message_context(
@@ -155,7 +211,7 @@ def get_message_context(
         after: Number of messages to include after the target message (default 5)
     """
     context = whatsapp_get_message_context(message_id, before, after)
-    return context
+    return to_dict(context)
 
 @mcp.tool()
 def send_message(
