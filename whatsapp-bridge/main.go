@@ -50,15 +50,16 @@ var (
 
 // WebhookPayload is the JSON body sent to the configured webhook URL on new messages
 type WebhookPayload struct {
-	ID        string `json:"id"`
-	ChatJID   string `json:"chat_jid"`
-	Sender    string `json:"sender"`
-	Content   string `json:"content"`
-	Timestamp string `json:"timestamp"`
-	IsFromMe  bool   `json:"is_from_me"`
-	MediaType string `json:"media_type"`
-	Filename  string `json:"filename"`
-	ChatName  string `json:"chat_name"`
+	ID         string `json:"id"`
+	ChatJID    string `json:"chat_jid"`
+	Sender     string `json:"sender"`
+	SenderName string `json:"sender_name"`
+	Content    string `json:"content"`
+	Timestamp  string `json:"timestamp"`
+	IsFromMe   bool   `json:"is_from_me"`
+	MediaType  string `json:"media_type"`
+	Filename   string `json:"filename"`
+	ChatName   string `json:"chat_name"`
 }
 
 func getWebhookURL() string {
@@ -587,15 +588,16 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 
 		// Fire webhook notification
 		fireWebhook(WebhookPayload{
-			ID:        msg.Info.ID,
-			ChatJID:   chatJID,
-			Sender:    sender,
-			Content:   content,
-			Timestamp: msg.Info.Timestamp.Format(time.RFC3339),
-			IsFromMe:  msg.Info.IsFromMe,
-			MediaType: mediaType,
-			Filename:  filename,
-			ChatName:  name,
+			ID:         msg.Info.ID,
+			ChatJID:    chatJID,
+			Sender:     sender,
+			SenderName: msg.Info.PushName,
+			Content:    content,
+			Timestamp:  msg.Info.Timestamp.Format(time.RFC3339),
+			IsFromMe:   msg.Info.IsFromMe,
+			MediaType:  mediaType,
+			Filename:   filename,
+			ChatName:   name,
 		}, logger)
 	}
 }
